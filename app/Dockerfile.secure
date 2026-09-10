@@ -1,0 +1,25 @@
+# SECURE image — the build the supply-chain pipeline signs + attests.
+#  - multi-stage: deps built in a builder, runtime is Google distroless (nonroot)
+#  - no shell, no package manager in the final image -> tiny attack surface, clean SBOM
+#  - runs as uid 65532 (nonroot) with a read-only root filesystem in k8s
+# Built, SBOM'd (syft), scanned (trivy, gated), signed (cosign) and attested
+# (SLSA provenance) by cloudbuild-secure.yaml.
+
+# builder Python MUST match the distroless runtime (debian12/bookworm = 3.11)
+# so uvicorn[standard]'s C-extensions (uvloop, httptools) are ABI-compatible.
+FROM python:3.11-slim-bookworm AS builder
+# Build context is the REPO ROOT (Cloud Build `-f app/Dockerfile.secure .`).
+WORKDIR /app
+COPY app/requirements.txt .
+RUN pip install --no-cache-dir --target=/app/site-packages -r requirements.txt
+COPY app/main.py .
+
+FROM gcr.io/distroless/python3-debian12:nonroot
+WORKDIR /app
+ENV PYTHONPATH=/app/site-packages
+COPY --from=builder /app/site-packages /app/site-packages
+COPY --from=builder /app/main.py /app/main.py
+USER 65532:65532
+EXPOSE 8080
+# distroless python entrypoint is `python3`
+CMD ["main.py"]

@@ -1,0 +1,18 @@
+# Triaged, time-boxed CVE waivers for the demo's secure image.
+# trivy auto-reads this file (repo root = /workspace during Cloud Build).
+#
+# These are HIGH findings that are either (a) not reachable in this app's usage,
+# or (b) awaiting an upstream release compatible with FastAPI. They only matter
+# when _SEVERITY includes HIGH; the default gate (CRITICAL) already passes.
+# In the real world each line gets an owner + expiry and is reviewed — that's the
+# point: exceptions are explicit and auditable, not silent.
+
+# starlette (transitive via fastapi) — DoS / SSRF via features this app doesn't use
+# (no StaticFiles, no Range serving, form limits set at the edge).
+CVE-2025-62727
+CVE-2026-48818
+CVE-2026-54283
+
+# base-OS python (debian 12) — fixed upstream but not yet in the distroless base.
+CVE-2026-4224
+CVE-2026-6100

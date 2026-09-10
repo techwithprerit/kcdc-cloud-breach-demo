@@ -1,0 +1,19 @@
+# POISON build: a tampered, UNSIGNED image (no SBOM, no provenance) pushed to the
+# same repo. Because it is never signed, Kyverno's signature check in the secure
+# namespace rejects it — while the insecure namespace runs it happily.
+#
+#   gcloud builds submit --config supplychain/cloudbuild-poison.yaml \
+#     --substitutions=_REGION=${REGION},_REPO=demo,_IMAGE=dealsvc,_TAG=poison .
+substitutions:
+  _REGION: us-central1
+  _REPO: demo
+  _IMAGE: dealsvc
+  _TAG: poison
+options:
+  logging: CLOUD_LOGGING_ONLY
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "supplychain/poison/Dockerfile",
+           "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:${_TAG}", "."]
+images:
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:${_TAG}"

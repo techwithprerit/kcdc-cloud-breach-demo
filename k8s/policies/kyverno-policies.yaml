@@ -1,0 +1,33 @@
+# Applied on the SECURE cluster only. Kyverno rejects any image in the dealsvc
+# namespace that isn't cosign-signed by the CI identity -> the poison image is
+# blocked here, while the insecure cluster (no Kyverno) runs it.
+# Pod Security Admission (restricted) already covers root/privileged/etc.
+#
+#   kubectl --context secure apply -f https://github.com/kyverno/kyverno/releases/download/v1.13.0/install.yaml
+#   envsubst < k8s/policies/kyverno-policies.yaml | kubectl --context secure apply -f -
+#
+# GCP-native equivalent: Binary Authorization REQUIRE_ATTESTATION (enable_binauthz=true).
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-image-signatures
+spec:
+  validationFailureAction: Enforce
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: require-cosign-signature
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [dealsvc]
+      verifyImages:
+        - imageReferences:
+            - "${REGION}-docker.pkg.dev/${PROJECT_SECURE}/demo/*"
+          attestors:
+            - entries:
+                - keyless:
+                    issuer: "https://accounts.google.com"
+                    subject: "${CI_SIGNER_EMAIL}"
+                    rekor:
+                      url: https://rekor.sigstore.dev

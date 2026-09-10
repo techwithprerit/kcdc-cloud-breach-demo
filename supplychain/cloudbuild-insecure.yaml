@@ -1,0 +1,19 @@
+# INSECURE build pipeline: build and push. That's it.
+#   - fat base image (Dockerfile), no SBOM, no scan, no signature, no provenance
+#   - this is how most images reach production
+#
+#   gcloud builds submit --config supplychain/cloudbuild-insecure.yaml \
+#     --substitutions=_REGION=${REGION},_REPO=demo,_IMAGE=dealsvc,_TAG=v1 .
+substitutions:
+  _REGION: us-central1
+  _REPO: demo
+  _IMAGE: dealsvc
+  _TAG: v1
+options:
+  logging: CLOUD_LOGGING_ONLY
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "app/Dockerfile",
+           "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:${_TAG}", "."]
+images:
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:${_TAG}"

@@ -1,0 +1,25 @@
+# --- secrets / local config: NEVER commit ---
+.env
+.env.bak
+terraform/terraform.tfvars
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+crash.log
+
+# --- python ---
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# --- build/scan artifacts ---
+*.tar
+sbom.spdx.json
+
+# --- os / editor ---
+.DS_Store
+*.swp
+.idea/
+.vscode/

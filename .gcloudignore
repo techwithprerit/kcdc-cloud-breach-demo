@@ -1,0 +1,19 @@
+# Keeps `gcloud builds submit` uploads tiny. Only app/ and supplychain/ are needed
+# to build the images; everything below is irrelevant to the Docker build.
+.git/
+.venv/
+venv/
+**/__pycache__/
+*.pyc
+# Terraform providers/state are huge and not part of any image build context
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate*
+terraform/.terraform*
+# local + generated artifacts
+.env
+*.zip
+*.png
+*.svg
+*.excalidraw
+fallback-minikube/

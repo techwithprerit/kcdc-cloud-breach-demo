@@ -1,0 +1,27 @@
+# A TAMPERED, unsigned image with a backdoor (/pwned). Applied to each cluster's
+# dealsvc namespace with envsubst. The Makefile points ${IMAGE_POISON} at the
+# matching project's registry so the image is always pullable — proving the SECURE
+# rejection is Kyverno's SIGNATURE check, not an image-pull error.
+#
+#   IMAGE_POISON=$IMAGE_POISON        envsubst < ... | kubectl --context insecure apply -f -   # RUNS
+#   IMAGE_POISON=$IMAGE_POISON_SECURE envsubst < ... | kubectl --context secure   apply -f -   # BLOCKED
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dealsvc-v2                 # "a hotfix from a compromised CI"
+  namespace: dealsvc
+  labels: {app: dealsvc, version: v2}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: dealsvc, version: v2}
+  template:
+    metadata:
+      labels: {app: dealsvc, version: v2}
+    spec:
+      containers:
+        - name: dealsvc
+          image: ${IMAGE_POISON}
+          ports: [{containerPort: 8080}]
+          env:
+            - {name: BACKDOOR, value: "1"}   # exposes /pwned

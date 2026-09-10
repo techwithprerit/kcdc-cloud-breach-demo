@@ -1,0 +1,107 @@
+# Offline INSECURE stack for minikube. Uses the locally-built image dealsvc:demo.
+# Includes a fake metadata server so the SSRF -> cloud-token-theft step works
+# without GCP (mirrors what GKE's real metadata server would hand over).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo-insecure
+---
+apiVersion: v1
+kind: Secret
+metadata: {name: dealsvc-secrets, namespace: demo-insecure}
+type: Opaque
+stringData:
+  DB_PASSWORD: "pr0d-db-Pa55!"
+  LLM_API_KEY: "sk-DEMO-not-a-real-key"
+  ADMIN_TOKEN: "s3cr3t-admin-token"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: dealsvc, namespace: demo-insecure}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: dealsvc}}
+  template:
+    metadata: {labels: {app: dealsvc}}
+    spec:
+      automountServiceAccountToken: true
+      containers:
+        - name: dealsvc
+          image: dealsvc:demo
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8080}]
+          env:
+            - {name: EXPENSIVE_ITERS, value: "6000000"}   # no offload -> loop starves
+            - name: DB_PASSWORD
+              valueFrom: {secretKeyRef: {name: dealsvc-secrets, key: DB_PASSWORD}}
+            - name: LLM_API_KEY
+              valueFrom: {secretKeyRef: {name: dealsvc-secrets, key: LLM_API_KEY}}
+            - name: ADMIN_TOKEN
+              valueFrom: {secretKeyRef: {name: dealsvc-secrets, key: ADMIN_TOKEN}}
+          livenessProbe:
+            httpGet: {path: /health, port: 8080}
+            periodSeconds: 3
+            timeoutSeconds: 1
+            failureThreshold: 2
+---
+apiVersion: v1
+kind: Service
+metadata: {name: dealsvc, namespace: demo-insecure}
+spec:
+  selector: {app: dealsvc}
+  ports: [{port: 80, targetPort: 8080}]
+---
+# Over-broad RBAC: the workload's default SA can read all secrets.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: toobroad, namespace: demo-insecure}
+rules:
+  - {apiGroups: [""], resources: ["secrets","pods","configmaps"], verbs: ["get","list","watch"]}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: toobroad, namespace: demo-insecure}
+subjects: [{kind: ServiceAccount, name: default, namespace: demo-insecure}]
+roleRef: {kind: Role, name: toobroad, apiGroup: rbac.authorization.k8s.io}
+---
+# ---- Fake metadata server (stands in for 169.254.169.254 on a laptop) --------
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: fake-metadata-src, namespace: demo-insecure}
+data:
+  meta.py: |
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import json
+    TOKEN = {"access_token": "ya29.FAKE-stolen-workload-token", "expires_in": 3599, "token_type": "Bearer"}
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+            self.wfile.write(json.dumps(TOKEN).encode())
+        def log_message(self, *a): pass
+    HTTPServer(("0.0.0.0", 8080), H).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: fake-metadata, namespace: demo-insecure}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: fake-metadata}}
+  template:
+    metadata: {labels: {app: fake-metadata}}
+    spec:
+      containers:
+        - name: meta
+          image: dealsvc:demo            # reuse the local python image
+          imagePullPolicy: IfNotPresent
+          command: ["python", "/scripts/meta.py"]
+          ports: [{containerPort: 8080}]
+          volumeMounts: [{name: src, mountPath: /scripts}]
+      volumes:
+        - {name: src, configMap: {name: fake-metadata-src}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: metadata, namespace: demo-insecure}   # reachable as http://metadata/...
+spec:
+  selector: {app: fake-metadata}
+  ports: [{port: 80, targetPort: 8080}]

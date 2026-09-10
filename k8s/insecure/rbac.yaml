@@ -1,0 +1,13 @@
+# Over-privileged RBAC on the insecure cluster: the namespace default SA can read
+# every Secret. With the mounted SA token, that's the lateral-movement path.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: dealsvc-toobroad, namespace: dealsvc}
+rules:
+  - {apiGroups: [""], resources: ["secrets", "pods", "configmaps"], verbs: ["get", "list", "watch"]}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: dealsvc-toobroad, namespace: dealsvc}
+subjects: [{kind: ServiceAccount, name: default, namespace: dealsvc}]
+roleRef: {kind: Role, name: dealsvc-toobroad, apiGroup: rbac.authorization.k8s.io}

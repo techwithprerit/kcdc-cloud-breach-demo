@@ -1,0 +1,103 @@
+# Offline SECURE stack for minikube — same image dealsvc:demo, hardened by config.
+# Runtime layer only (secrets via k8s Secret here; the Secret-Manager / Workload
+# Identity / SBOM+SLSA story is the GCP demo). Egress default-deny is what turns
+# the SSRF into a dead end offline, exactly like on GKE.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo-secure
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: dealsvc, namespace: demo-secure}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Secret
+metadata: {name: dealsvc-secrets, namespace: demo-secure}
+type: Opaque
+stringData: {DB_PASSWORD: "pr0d-db-Pa55!", ADMIN_TOKEN: "s3cr3t-admin-token"}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: dealsvc, namespace: demo-secure}
+spec:
+  replicas: 3
+  selector: {matchLabels: {app: dealsvc}}
+  template:
+    metadata: {labels: {app: dealsvc}}
+    spec:
+      serviceAccountName: dealsvc
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: dealsvc
+          image: dealsvc:demo
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8080}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: "100m", memory: "128Mi"}
+            limits:   {cpu: "500m", memory: "256Mi"}
+          env:
+            - {name: SECURE_DEBUG, value: "1"}
+            - {name: SECURE_SSRF, value: "1"}
+            - {name: SECURE_ADMIN, value: "1"}
+            - {name: SECURE_RATELIMIT, value: "1"}
+            - {name: EXPENSIVE_OFFLOAD, value: "1"}
+            - name: DB_PASSWORD
+              valueFrom: {secretKeyRef: {name: dealsvc-secrets, key: DB_PASSWORD}}
+            - name: ADMIN_TOKEN
+              valueFrom: {secretKeyRef: {name: dealsvc-secrets, key: ADMIN_TOKEN}}
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+          livenessProbe:
+            httpGet: {path: /health, port: 8080}
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+      volumes: [{name: tmp, emptyDir: {}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: dealsvc, namespace: demo-secure}
+spec:
+  selector: {app: dealsvc}
+  ports: [{port: 80, targetPort: 8080}]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: dealsvc, namespace: demo-secure}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: dealsvc}
+  minReplicas: 3
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource: {name: cpu, target: {type: Utilization, averageUtilization: 60}}
+---
+# Default-deny egress: the app cannot reach the (fake) metadata server -> SSRF dies.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny, namespace: demo-secure}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-dns-and-ingress, namespace: demo-secure}
+spec:
+  podSelector: {matchLabels: {app: dealsvc}}
+  policyTypes: [Ingress, Egress]
+  ingress: [{ports: [{protocol: TCP, port: 8080}]}]
+  egress:
+    - ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]

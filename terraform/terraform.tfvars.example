@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars. Defaults target the two existing KCDC projects cheaply.
+project_insecure  = "my-insecure-project"
+project_secure    = "my-secure-project"
+region            = "us-central1"
+zone              = "us-central1-a"
+
+# cost knobs (already cheap)
+node_machine_type = "e2-standard-2"
+use_spot          = true
+node_max          = 2
+disk_size_gb      = 30
+
+# optional hardening (leave false unless you hold the extra roles)
+enable_org_policies = false   # needs orgpolicy.policyAdmin on my-secure-project
+enable_binauthz     = false   # Kyverno enforces image signatures either way
+
+# set after first `make images-secure` (the my-secure-project Cloud Build SA):
+#   <PROJECT_NUMBER>@cloudbuild.gserviceaccount.com
+ci_signer_email     = ""

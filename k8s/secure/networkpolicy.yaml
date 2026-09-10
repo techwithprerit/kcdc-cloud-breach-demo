@@ -1,0 +1,20 @@
+# Default-deny for the dealsvc namespace on the secure cluster (Dataplane V2
+# enforces it), then allow only DNS + ingress on 8080. This is what turns the
+# SSRF into a dead end: no egress to a metadata server or the internet.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny, namespace: dealsvc}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-dns-and-ingress, namespace: dealsvc}
+spec:
+  podSelector: {matchLabels: {app: dealsvc}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports: [{protocol: TCP, port: 8080}]
+  egress:
+    - ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]

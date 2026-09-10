@@ -1,0 +1,99 @@
+# SECURE build pipeline: build -> save tarball -> SBOM -> scan(GATE) -> push -> sign -> attest.
+#
+# IMPORTANT: syft / trivy / cosign images are DISTROLESS (no shell), so every step
+# calls the tool's native entrypoint directly — no `entrypoint: sh`. SBOM + scan
+# run against a saved image tarball (docker-archive) so they need no registry auth.
+# The CVE gate (trivy --exit-code 1) runs BEFORE push, so a vulnerable image never
+# even reaches the registry.
+#
+#   gcloud builds submit --project my-secure-project --config supplychain/cloudbuild-secure.yaml \
+#     --substitutions=_REGION=us-central1,_REPO=demo,_IMAGE=dealsvc,_TAG=secure .
+substitutions:
+  _REGION: us-central1
+  _REPO: demo
+  _IMAGE: dealsvc
+  _TAG: secure
+  # Gate severity. Default CRITICAL (deterministic pass; HIGHs are reported, not
+  # blocked). Flip to "HIGH,CRITICAL" to demo the strict gate — the known HIGHs are
+  # then waived via the repo-root .trivyignore, so only NEW findings block.
+  _SEVERITY: CRITICAL
+options:
+  logging: CLOUD_LOGGING_ONLY
+steps:
+  # 1) Build the hardened (distroless, nonroot) image.
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "app/Dockerfile.secure",
+           "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:${_TAG}", "."]
+
+  # 2) Save it to a tarball + write the SLSA provenance predicate (this step HAS bash).
+  - id: prep
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        # cosign runs as nonroot (uid 65532); give it a writable HOME for its cache.
+        mkdir -p /workspace/cosign-home && chmod 777 /workspace/cosign-home
+        docker save "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:${_TAG}" \
+          -o /workspace/image.tar
+        cat > /workspace/slsa.json <<EOF
+        { "buildType": "https://cloudbuild.googleapis.com/GoogleHostedWorker",
+          "builder": { "id": "https://cloudbuild.googleapis.com/projects/$PROJECT_ID" },
+          "invocation": { "configSource": { "uri": "git+demo", "entryPoint": "cloudbuild-secure.yaml" } },
+          "buildId": "$BUILD_ID" }
+        EOF
+
+  # 3) SBOM (SPDX) with syft — native entrypoint, scans the tarball (no registry auth).
+  - id: sbom
+    name: anchore/syft:latest
+    args: ["docker-archive:/workspace/image.tar", "-o", "spdx-json=/workspace/sbom.spdx.json"]
+
+  # 4) Vulnerability GATE — fail the build on HIGH/CRITICAL. Native trivy entrypoint,
+  #    scans the tarball. This is what stops a CVE-ridden image from being signed.
+  # trivy auto-reads /workspace/.trivyignore (repo-root) for triaged waivers.
+  - id: scan
+    name: aquasec/trivy:latest
+    args: ["image", "--input", "/workspace/image.tar",
+           "--exit-code", "1", "--severity", "${_SEVERITY}", "--ignore-unfixed"]
+
+  # 5) Push (only reached if the gate passed).
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: ["push", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:${_TAG}"]
+
+  # 5b) Give the (distroless, credential-helper-less) cosign an AR bearer token via a
+  #     static Docker config in its HOME. gcloud mints the build SA's access token.
+  #     ($$ escapes Cloud Build substitution so the shell sees the variables.)
+  - id: registry-auth
+    name: gcr.io/cloud-builders/gcloud
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        mkdir -p /workspace/cosign-home/.docker
+        TOKEN=$$(gcloud auth print-access-token)
+        AUTH=$$(printf 'oauth2accesstoken:%s' "$$TOKEN" | base64 -w0)
+        printf '{"auths":{"%s-docker.pkg.dev":{"auth":"%s"}}}' "${_REGION}" "$$AUTH" \
+          > /workspace/cosign-home/.docker/config.json
+        chmod -R 777 /workspace/cosign-home
+
+  # 6) Sign (cosign keyless -> Fulcio cert + Rekor log). Native entrypoint.
+  - id: sign
+    name: gcr.io/projectsigstore/cosign:v2.4.1
+    env: ["COSIGN_YES=true", "HOME=/workspace/cosign-home", "DOCKER_CONFIG=/workspace/cosign-home/.docker"]
+    args: ["sign", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:${_TAG}"]
+
+  # 7) Attach the SBOM as an attestation.
+  - id: attest-sbom
+    name: gcr.io/projectsigstore/cosign:v2.4.1
+    env: ["COSIGN_YES=true", "HOME=/workspace/cosign-home", "DOCKER_CONFIG=/workspace/cosign-home/.docker"]
+    args: ["attest", "--predicate", "/workspace/sbom.spdx.json", "--type", "spdxjson",
+           "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:${_TAG}"]
+
+  # 8) Attach SLSA provenance as an attestation.
+  - id: attest-slsa
+    name: gcr.io/projectsigstore/cosign:v2.4.1
+    env: ["COSIGN_YES=true", "HOME=/workspace/cosign-home", "DOCKER_CONFIG=/workspace/cosign-home/.docker"]
+    args: ["attest", "--predicate", "/workspace/slsa.json", "--type", "slsaprovenance",
+           "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:${_TAG}"]
